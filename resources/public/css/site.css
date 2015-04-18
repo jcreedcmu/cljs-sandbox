@@ -1,27 +1,5 @@
 body {
-  font-family: 'Helvetica Neue', Verdana, Helvetica, Arial, sans-serif;
-  max-width: 600px;
-  margin: 0 auto;
-  padding-top: 72px;
-  -webkit-font-smoothing: antialiased;
-  font-size: 1.125em;
-  color: #333;
-  line-height: 1.5em;
-}
-
-h1, h2, h3 {
-  color: #000;
-}
-h1 {
-  font-size: 2.5em
-}
-
-h2 {
-  font-size: 2em
-}
-
-h3 {
-  font-size: 1.5em
+  font-family: sans-serif;
 }
 
 a {
@@ -31,4 +9,32 @@ a {
 
 a:hover {
   text-decoration: underline;
+}
+
+li {
+  background-color: #e97; padding: 0px; margin-bottom: 10px; width: 2em;
+  border-radius: 5px;
+  font-size: 30px;
+  text-align: center;
+  list-style: none;
+  color: #a20;
+  height: 2em;
+  line-height: 2.2em;
+  padding: 0 0em;
+  overflow: hidden;
+}
+
+.foo-enter {
+  height: 0; margin-bottom: 0;
+  transition: all 0.3s ease-in;
+}
+
+.foo-leave {
+  height: 0; margin-bottom: 0;
+  transition: all 0.3s ease-in;
+}
+
+.foo-enter-active {
+  height: 2em; margin-bottom: 10px;
+  opacity: 1;
 }

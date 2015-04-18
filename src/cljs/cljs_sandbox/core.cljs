@@ -1,52 +1,45 @@
 (ns cljs-sandbox.core
     (:require [reagent.core :as reagent :refer [atom]]
-              [reagent.session :as session]
-              [secretary.core :as secretary :include-macros true]
-              [goog.events :as events]
-              [goog.history.EventType :as EventType]
-              [cljsjs.react :as react])
-    (:import goog.History))
+              [cljsjs.react :as react]))
 
-;; -------------------------
-;; Views
+(defn without-nth [seq n]
+  vec (concat (subvec seq 0 n) (subvec seq (+ 1 n))))
 
-(defn home-page []
-  [:div [:h2 "Welcome to cljs-sandbox"]
-   [:div [:a {:href "#/about"} "go to about page"]]])
+(def css-transition-group
+  (reagent/adapt-react-class js/React.addons.CSSTransitionGroup))
 
-(defn about-page []
-  [:div [:h2 "About cljs-sandbox"]
-   [:div [:a {:href "#/"} "go to the home page"]]])
+(defn list-comp [items]
+   [css-transition-group {:transition-name "foo"}
+    (map-indexed (fn [i x] ^{:key x} [:li x]) @items)  ])
 
-(defn current-page []
-  [:div [(session/get :current-page)]])
+(defn main-comp []
+  (let [items (atom ["A" "B" "C"])
+        next-item (atom 0)
+        adder (fn [position]
+                (fn [e]
+                  (do (swap! items #(vec (let [[bef aft] (split-at position %)]
+                                           (concat bef [@next-item] aft))))
+                      (swap! next-item inc))))
+        deleter (fn [position]
+                  (fn [e] (swap! items #(vec (without-nth % position)))))
+        _ (js/setTimeout (adder 0) 300)
+        _ (js/setTimeout (adder 2) 450)
+        _ (js/setTimeout (adder 5) 900)
+        _ (js/setTimeout (deleter 0) 1600)
+        _ (js/setTimeout (deleter 2) 2200)
+        _ (js/setTimeout (deleter 2) 2350)]
+    [:div
+     [:button {:on-click (adder 0)} "add"]
+     [:button {:on-click (deleter 0)} "remove"]
+     [:ul
+      [list-comp items]]
+     ]))
 
-;; -------------------------
-;; Routes
-(secretary/set-config! :prefix "#")
+(defn main []
+  [main-comp])
 
-(secretary/defroute "/" []
-  (session/put! :current-page #'home-page))
-
-(secretary/defroute "/about" []
-  (session/put! :current-page #'about-page))
-
-;; -------------------------
-;; History
-;; must be called after routes have been defined
-(defn hook-browser-navigation! []
-  (doto (History.)
-    (events/listen
-     EventType/NAVIGATE
-     (fn [event]
-       (secretary/dispatch! (.-token event))))
-    (.setEnabled true)))
-
-;; -------------------------
-;; Initialize app
 (defn mount-root []
-  (reagent/render [current-page] (.getElementById js/document "app")))
+  (reagent/render [main] (.getElementById js/document "app")))
 
 (defn init! []
-  (hook-browser-navigation!)
   (mount-root))

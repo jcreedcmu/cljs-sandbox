@@ -8,7 +8,7 @@
 
   :dependencies [[org.clojure/clojure "1.6.0"]
                  [ring-server "0.4.0"]
-                 [cljsjs/react "0.13.1-0"]
+                 [cljsjs/react-with-addons "0.12.2-5"]
                  [reagent "0.5.0"]
                  [reagent-forms "0.5.0"]
                  [reagent-utils "0.1.4"]
