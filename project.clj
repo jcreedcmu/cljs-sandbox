@@ -19,6 +19,7 @@
                  [compojure "1.3.3"]
                  [selmer "0.8.2"]
                  [environ "1.0.0"]
+                 [org.clojure/core.match "0.3.0-alpha4"]
                  [secretary "1.2.3"]]
 
   :plugins [[lein-cljsbuild "1.0.4"]

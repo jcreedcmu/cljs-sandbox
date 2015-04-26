@@ -1,5 +1,6 @@
 (ns cljs-sandbox.core
   (:require [reagent.core :as reagent :refer [atom cursor]]
+            [cljs.core.match :refer-macros [match]]
             [reagent.session :as session]
             [secretary.core :as secretary :include-macros true]
             [goog.events :as events]
@@ -9,6 +10,7 @@
             [cljs-sandbox.state :as state])
   (:import goog.History))
 
+(enable-console-print!)
 ;; -------------------------
 ;; Views
 
@@ -28,28 +30,38 @@
                [:input {:type "text" :on-change slider}]
                ]])
 
-(defn init-dragger [f e]
-  (let [fe (f (.-pageX e) (.-pageY e))]
-    (aset js/document "onmousemove" fe)
-    (aset js/document "onmouseup" #(aset js/document "onmousemove" nil)))
-  )
-
-(defn init-dragger-thunk [f]
-  (fn [e]
-    (init-dragger f e)))
+(defn init-dragger
+  ([move-cb e1] (init-dragger move-cb (fn []) e1))
+  ([move-cb up-cb e1]
+   (let [x1 (.-pageX e1) y1 (.-pageY e1)]
+     (aset js/document "onmousemove"
+           (fn [e2]
+             (let [x2 (.-pageX e2) y2 (.-pageY e2)]
+               (move-cb x1 y1 x2 y2))))
+     (aset js/document "onmouseup"
+           (fn [e2]
+             (let [x2 (.-pageX e2) y2 (.-pageY e2)]
+               (up-cb x1 y1 x2 y2))
+             (aset js/document "onmousemove" nil)
+             (aset js/document "onmouseup" nil))))
+   (.stopPropagation e1)
+   (.preventDefault e1)))
 
 (defn mover [rw]
   (let [orig @(:r rw)]
-    (fn [x y]
-      (fn [e] ((:w rw) {:x (+ (:x orig) (- (.-pageX e) x))
-                        :y (+ (:y orig) (- (.-pageY e) y))})
-        ))))
+    (fn [x1 y1 x2 y2]
+      ((:w rw) {:x (+ (:x orig) (- x2 x1))
+                :y (+ (:y orig) (- y2 y1))})
+      )))
 
 (def point-color "#5af")
+(def select-color "#aaa")
 (def pre-color "#f3a")
 (def post-color "#5af")
 
+(def select-tool-color "#ffe")
 (def background-color "#ffe")
+(def pen-tool-color "#eef")
 
 
 (defn get-pre [node] {:x (+ (get-in node [:pt :x]) (get-in node [:pre :x]))
@@ -70,12 +82,29 @@
   (+ 0.5 (.floor js/Math x)))
 
 
-(defn deselect-all [state]
-  (swap! state #(vec (for [pt %]  (assoc pt :selected false)))))
+(defn transform-all-in-glyph!  [f glyph]
+  (let [state-f #(vec (map (fn [path] (update-in path [:points] (fn [points] (vec (map f points))))) %))]
+   (swap! glyph state-f)
+    )
+  )
+
+(defn transform-all-in-path!  [f path]
+  (let [state-f (fn [path] (update-in path [:points] (fn [points] (vec (map f points)))))]
+   (swap! path state-f)
+    )
+  )
+
+(defn deselect-all-in-glyph! [glyph]
+  (transform-all-in-glyph! #(assoc % :selected false) glyph))
+
+(defn select-all-in-path! [path]
+  (transform-all-in-path! #(assoc % :selected true) path))
 
 (defn make-rw [cell] {:r cell :w (partial reset! cell)})
 
-(defn veclen [pt]
+
+
+(defn vlen [pt]
   (let [{:keys [x y]} pt]
     (.sqrt js/Math (+ (* x x) (* y y)))))
 
@@ -83,12 +112,14 @@
   (let [{:keys [x y]} v]
     {:x (* s x) :y (* s y)}))
 
-(defn normalize [v] (stimes (/ 1 (veclen v)) v))
+(defn normalize [v] (stimes (/ 1 (vlen v)) v))
+(defn v- [{ vx :x vy :y} {wx :x wy :y }] {:x (- vx wx) :y (- vy wy)} )
+(defn vproj [v w] (stimes (vlen v) (normalize w)))
 
 (defn handle-rw [cell this other]
 (let [free-motion (make-rw (cursor cell [this]))
       other-cell (cursor cell [other])
-      other-length (veclen @other-cell)]
+      other-length (vlen @other-cell)]
  (case (:type @cell)
    :corner free-motion
    :curve (update free-motion :w (fn [old-w] (fn [new-val]
@@ -104,10 +135,27 @@
 ;; :type [:curve|:corner],
 ;; }
 
-(defn movable-point [selection cell]
+;(mover (make-rw ptcell))
+
+(defn glyph-map [f glyph]
+  (vec (for [path glyph] (update path :points (fn [points] (vec (for [point points] (f point))))))))
+
+(defn big-mover [glyph]
+  (let [orig @glyph]
+    (fn [x1 y1 x2 y2]
+      (let [move-by (fn [v] (if (:selected v) (update v :pt (fn [{:keys [x y]}] {:x (+ x (- x2 x1)) :y (+ y (- y2 y1))})) v))
+            ident (fn [v] v)]
+       (reset! glyph (glyph-map move-by orig))))))
+
+(def last-click (atom 0))
+(defn now [] (js* "0 + Date.now()"))
+(defn set-now [] (reset! last-click (now)))
+(defn recent? [] (let [recent (< (- (now) @last-click) 300)] (set-now) recent))
+
+(defn movable-point [glyph path cell acell]
   (let [ptcell (cursor cell [:pt])
         pt @ptcell
-        pre (get-pre @cell)
+        pre (get-pre acell)
         post (get-post @cell)
         selected (:selected @cell)
         common {
@@ -115,10 +163,16 @@
                 :fill (if selected point-color background-color)
                 :stroke-width 1
                 :on-mouse-down (fn [e]
-                                 (if (and (not selected) (not (.-shiftKey e)))
-                                   (deselect-all selection))
-                                 (swap! cell #(assoc % :selected (not (and selected (.-shiftKey e)))))
-                                 (init-dragger (mover (make-rw ptcell)) e))
+                                 (if (recent?)
+                                   (do (select-all-in-path! path)
+                                       (init-dragger (big-mover glyph) e))
+                                   (do
+                                     (if (and (not selected) (not (.-shiftKey e)))
+                                       (deselect-all-in-glyph! glyph))
+                                     (swap! cell #(assoc % :selected (not (and selected (.-shiftKey e)))))
+                                     (init-dragger (big-mover glyph) e)))
+                                 (.preventDefault e)
+                                 (.stopPropagation e))
                 :cursor "pointer"
                 }
         handles [[:line {:x1 (:x pt) :y1 (:y pt) :x2 (:x pre) :y2 (:y pre) :style {:stroke-width 1 :stroke pre-color}}]
@@ -148,30 +202,119 @@
       (:x p3)  (:y p3)
       (:x p4) (:y p4)])))
 
-(defn display [state]
-  (let [ast          @state
-        curve-length (count ast)
-        last (- curve-length 1)
-        pathspec (join " "
-                       (apply concat (for [ix  (range curve-length)
-                                           jx [ (if (= ix last) 0 (inc ix))]]
-                                       ^{:key [:line ix]} (curve-elts (get ast ix) (get ast jx) (= ix 0))
-                                       )))]
-    [:svg {:style {:background-color background-color} :height "100%" :width "100%"}
+(defn render-path [glyph path]
+  (let [points        (cursor path [:points])
+        ast           @points
+        curve-length  (count ast)
+        last          (- curve-length 1)
+        pathspec      (join " "
+                            (apply concat (for [ix  (range last) ;; replace last with curve-length to get closed
+                                                jx [ (if (= ix last) 0 (inc ix))]]
+                                            ^{:key [:line ix]} (curve-elts (get ast ix) (get ast jx) (= ix 0))
+                                            )))]
+    [:g
      [:path { :stroke point-color
              :stroke-width 1
-             :fill "#eef"
+             :fill "none"
              :d pathspec}]
+     ;; perf debugging
+;     (do (print (get @path :name)) [:g])
+     (doall (map (fn [ix]
+             ^{:key ix} [movable-point glyph path (cursor points [ix]) @(cursor points [ix])]
+             ) (range (count ast))))]
 
-     (map (fn [ix]
-            ^{:key ix} [movable-point state (cursor state [ix])]
-            ) (range (count ast)))]))
+    )
+  )
 
+(defn abs [x] (.abs js/Math x))
+
+(defn pts-to-xywh [rect]
+ {:x (+ 0.5 (min (:x1 rect) (:x2 rect)))
+  :y (+ 0.5 (min (:y1 rect) (:y2 rect)))
+  :width (abs (- (:x2 rect) (:x1 rect)))
+  :height (abs (- (:y2 rect) (:y1 rect)))})
+
+(defn pt-in-rect [pt rect]
+  (let [[x1 y1 x2 y2] rect
+        {:keys [x y]} pt]
+    (and (>= x (min x1 x2)) (>= y (min y1 y2)) (<= x (max x1 x2)) (<= y (max y1 y2)))))
+
+(defn init-selection-rect-dragger [selection-rect glyph e]
+  (init-dragger (fn [x1 y1 x2 y2] (reset! selection-rect {:x1 x1 :x2 x2 :y1 y1 :y2 y2}))
+                (fn [x1 y1 x2 y2]
+                  (transform-all-in-glyph! #(assoc % :selected (pt-in-rect (:pt %) [x1 y1 x2 y2])) glyph)
+                  (reset! selection-rect nil)) e))
+
+;; takes a list, returns the unique non-nil element if any.
+(defn unique [list] (match (reduce #(match [%1 %2]
+                                           [nil x] x
+                                     [x nil] x
+                                     [_ _] :dup) nil list)
+                           :dup nil
+                           x x))
+
+;; takes a points; if there is a unique selected endpoint, return a path to it, else nil
+(defn points-stem [points] (let [num-selected (count (filter :selected points))
+                                 last (- (count points) 1)]
+                             (if (= 1 num-selected)
+                               (cond
+                                 (:selected (get points 0)) [0]
+                                 (:selected (get points last)) [last]
+                                 true nil))))
+
+;; takes a glyph; if there is a unique selected point, return a path to it, else nil
+(defn glyph-stem [glyph]
+  (unique (map #(if-let [st (points-stem (get-in glyph [%1 :points]))] `[~%1 :points ~@st] ) (range (count glyph)))))
+
+
+(defn init-pen-dragger [glyph e]
+  (let [newvert {:type :corner
+                 :pt {:x (.-pageX e) :y (.-pageY e)}
+                 :pre {:x 0 :y 0}
+                 :post {:x 0 :y 0} :selected true}]
+    (match (glyph-stem @glyph)
+           [n :points 0] (do (deselect-all-in-glyph! glyph)
+                             (swap! (cursor glyph [n :points]) #(vec (concat [newvert] %))))
+           [n :points m] (do (deselect-all-in-glyph! glyph)
+                             (swap! (cursor glyph [n :points]) #(vec (concat % [newvert]))))
+           _ (swap! glyph #(vec (concat % [{:name "new"
+                                            :points [newvert]}]))))))
+
+
+(defn display [selection-rect state]
+  (let [paths (cursor state [:paths])
+        mode  (:mode @state)]
+    (aset js/document "onkeydown"
+          (fn [e] (let [k (.-keyCode e)]
+                    (print k)
+                    (cond (= k 49) (transform-all-in-glyph!
+                                    (fn [v] (if (:selected v) (assoc v :type :corner) v))
+                                    paths))
+                    (cond (= k 50) (transform-all-in-glyph!
+                                    (fn [v] (if (:selected v) (let [{pre :pre post :post} v] (merge v {:pre (vproj pre (v- pre post))
+                                                                                                       :post (vproj post (v- post pre)) :type :curve})) v))
+                                    paths))
+                    (cond (= k 86) (swap! state assoc :mode :select))
+                    (cond (= k 67) (swap! state assoc :mode :pen)))))
+
+    `[:div [:svg
+            ~{:style {:background-color (case mode :select select-tool-color :pen pen-tool-color)}
+              :height "100%" :width "100%"
+              :on-mouse-down (fn [e] (case mode
+                                       :select (init-selection-rect-dragger selection-rect paths e)
+                                       :pen (init-pen-dragger paths e)))
+              }
+            ~(for [path-ix (range (count @paths))] ^{:key path-ix} [render-path paths (cursor paths [path-ix])])
+
+            ~@(if-let [sr @selection-rect]
+                [[:rect (merge (pts-to-xywh sr) {
+                                                 :stroke-width 1 :stroke select-color :fill "rgba(0,0,0,0.05)"})]] [])
+            ]]))
 
 (defn home-page []
-  [:div
-   [display state/state]
-   ])
+  [display
+   (cursor state/state [:selection-rect])
+   state/state])
 
 
 (defn current-page []
